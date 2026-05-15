@@ -16,4 +16,8 @@ fi
 cmake ${CMAKE_ARGS} .. -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR="lib" -DCMAKE_BUILD_TYPE=Release -GNinja -DCMAKE_CXX_FLAGS="-D_LIBCPP_DISABLE_AVAILABILITY" ${OPENMP_FLAGS}
 ninja install   # Install C++ library into Conda env
 cd ../python
-${PYTHON} -m pip install -v . --config-settings use_system_libtreelite=True
+# --config-settings use_system_libtreelite=True tells treelite's custom
+# packager.pep517 backend to skip building libtreelite from source and to
+# NOT bundle a copy in the wheel; the runtime libpath.py finds it at
+# $PREFIX/lib via sys.base_prefix.
+${PYTHON} -m pip install . -vv --no-deps --no-build-isolation --config-settings use_system_libtreelite=True

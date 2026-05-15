@@ -13,18 +13,32 @@ source:
 
 build:
   number: 0
-  skip: true  # [python_impl == 'pypy' and win]
+  skip: true  # [py<311]
+  # pkgs/main libgomp 14.3.0 / 15.2.0 ship `libgomp.so.1.0.0` + an unversioned
+  # `libgomp.so` symlink but no `libgomp.so.1` symlink. ELF runtime resolution
+  # works via SONAME, but conda-build's overlinking check does literal-filename
+  # matching and can't see libgomp.so.1 in any installed package. Whitelist it.
+  # llvm-openmp on osx ships libomp.dylib without a versioned symlink either.
+  missing_dso_whitelist:
+    - "**/libgomp.so.1"  # [linux]
+    - "**/libomp.dylib"  # [osx]
 
 requirements:
   build:
     - python                                 # [build_platform != target_platform]
     - cross-python_{{ target_platform }}     # [build_platform != target_platform]
     - cmake >=3.14
-    - ninja
+    - ninja-base
     - fmt
-    - rapidjson >=v1.1.0.post20240409
+    - rapidjson
+    # treelite's CMakeLists FetchContent's mdspan via git clone (no version
+    # of mdspan on pkgs/main yet). Without git in build, the configure step
+    # fails with "could not find git for clone of mdspan-populate".
+    - git
+    # osx: llvm-openmp ships omp.h at $BUILD_PREFIX/include — needed at
+    # compile time. (Linux gcc ships an internal omp.h via -fopenmp, so
+    # libgomp doesn't need to be a build dep there.)
     - llvm-openmp  # [osx]
-    - libgomp  # [linux]
     - {{ compiler('c') }}
     - {{ compiler('cxx') }}
     - {{ stdlib('c') }}
@@ -32,17 +46,46 @@ requirements:
     - python
     - pip >=19.0
     - hatchling >=1.12.1
+    # OpenMP runtime libraries also belong in host so they get picked up by
+    # the link step against $PREFIX/lib and surfaced into the run env.
+    - llvm-openmp  # [osx]
+    - libgomp  # [linux]
+    # libcxx-devel ships matching libc++ headers + libc++.dylib so the link
+    # step finds the [abi:neXXXXX]-tagged symbols (std::bad_function_call,
+    # etc.) that clang 20+ headers emit. Without it the link falls back to
+    # the SDK's older libc++ which lacks those tagged symbols.
+    - libcxx-devel  # [osx]
   run:
     - python
     - numpy
     - scipy
     - packaging
+    # libtreelite.so DT_NEEDED libgomp.so.1; pkgs/main libgomp has no
+    # run_exports, so we add it explicitly to satisfy the overlinking check.
+    - libgomp  # [linux]
+    - llvm-openmp  # [osx]
+  run_constrained:
+    # Surface upstream's optional `[scikit-learn]` extra so the solver can
+    # warn if a user installs treelite alongside an incompatible sklearn.
+    # treelite.sklearn.import_model / export_model use sklearn at call time.
+    - scikit-learn
 
 test:
-  requires:
-    - setuptools
   imports:
     - treelite
+  commands:
+    # Smoke test: from-imports trigger eager submodule loads and exercise the
+    # libtreelite dlopen path (the 0001 patch opens it with RTLD_GLOBAL).
+    - python -c "from treelite import Model, TreeliteError, gtil, sklearn"
+    - python -c "import treelite; assert treelite.__version__ == '{{ version }}'"
+    - test -f $PREFIX/lib/libtreelite${SHLIB_EXT}                                              # [unix]
+    - if not exist "%LIBRARY_BIN%\treelite.dll" exit 1                                         # [win]
+    # NOTE: `pip check` is intentionally omitted. The treelite wheel built on
+    # osx-arm64 is tagged `macosx_12_1_arm64` (matches the build SDK's
+    # minimum-macOS), and PBP test workers running on macOS <= 12.0 reject
+    # it with "treelite X.Y.Z is not supported on this platform". The conda
+    # package itself installs and imports correctly; only the wheel metadata
+    # platform-tag check fails. Conda-forge's treelite recipe also omits it.
 
 about:
   home: https://github.com/dmlc/treelite
@@ -50,8 +93,11 @@ about:
   license_family: Apache
   license_file: LICENSE
   summary: Universal model exchange and serialization format for decision tree forests
-
-  description: Universal model exchange and serialization format for decision tree forests
+  description: |
+    Treelite is a universal model exchange and serialization format for decision
+    tree forests. It enables fast in-memory prediction and converts trained models
+    from popular libraries (XGBoost, LightGBM, scikit-learn) into a portable
+    representation suitable for deployment.
   doc_url: https://treelite.readthedocs.io/
   dev_url: https://github.com/dmlc/treelite
 
